@@ -1,76 +1,127 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
-import json
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
 import os
-from func import extract_schedule_to_json
-import re
-import telegram
+from utils import load_schedule, filter_groups, get_schedule_for_day, get_schedule_for_week, GROUPS_PER_PAGE
+import sqlite3
+
+conn = sqlite3.connect('users.db', check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    telegram_login TEXT,
+    recent_groups TEXT  -- Строка с последними группами, разделенными запятыми
+)
+''')
+conn.commit()
+
+def add_or_update_user(user_id, telegram_login, selected_group):
+    """Добавление или обновление пользователя в базе данных с тремя последними группами."""
+    user_info = get_user(user_id)
+    if user_info:
+        recent_groups = user_info[2] or ""
+        groups_list = recent_groups.split(",") if recent_groups else []
+        if selected_group not in groups_list:
+            groups_list.append(selected_group)
+            groups_list = groups_list[-3:]  # Оставляем только последние три группы
+        recent_groups = ",".join(groups_list)
+    else:
+        recent_groups = selected_group
+
+    cursor.execute('''
+    INSERT INTO users (id, telegram_login, recent_groups) VALUES (?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET telegram_login = excluded.telegram_login, recent_groups = excluded.recent_groups
+    ''', (user_id, telegram_login, recent_groups))
+    conn.commit()
+
+def get_user(user_id):
+    """Получение информации о пользователе по ID."""
+    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+    return cursor.fetchone()
 
 
-schedule_data = {}
-GROUPS_PER_PAGE = 5  
-SCHEDULE_FILE = 'schedule_file.xlsx'
 
-def normalize_string(s):
-    return re.sub(r'\s+', '', s).lower()
+SEARCH, UPDATE_SCHEDULE, CHOOSING_GROUP = range(3)
+schedule_data = {} 
 
-def split_string(s):
-    return re.findall(r'[а-яА-Яa-zA-Z]+|\d+', s)
+def start_update_schedule(update: Update, context: CallbackContext):
+    update.message.reply_text("Пожалуйста, отправьте файл с расписанием.")
+    return UPDATE_SCHEDULE
 
-def filter_groups(user_input, groups):
-    normalized_input = normalize_string(user_input)
-    input_parts = split_string(normalized_input)
-    filtered_groups = []
+def update_schedule(update: Update, context: CallbackContext):
+    global schedule_data
+    document = update.message.document
+    if document:
+        file = context.bot.get_file(document.file_id)
+        temp_file_path = file.download()
+        try:
+            schedule_data = load_schedule() 
+            update.message.reply_text("Расписание успешно обновлено.")
+        finally:
+            os.remove(temp_file_path) 
+    else:
+        update.message.reply_text("Ошибка загрузки файла.")
+    return ConversationHandler.END
+        
+def start(update: Update, context: CallbackContext):
+    user_id = update.message.from_user.id
+    telegram_login = update.message.from_user.username
 
-    for group in groups:
-        normalized_group = normalize_string(group)
-        if all(part in normalized_group for part in input_parts):
-            filtered_groups.append(group)
+    user_info = get_user(user_id)
+    if user_info:
+        add_or_update_user(user_id, telegram_login, user_info[2])
+    else:
+        add_or_update_user(user_id, telegram_login, None)
 
-    return filtered_groups
-
-def format_schedule_for_group(group_schedule):
-    schedule_text = ""
-    for day, classes in group_schedule.items():
-        schedule_text += f"\n{day}:\n"
-        for class_session in classes:
-            schedule_text += f"{class_session['Time']} - {class_session['Discipline']} ({class_session['Type of Class']})\n"
-    return schedule_text
+    if not schedule_data:
+        update.message.reply_text("Расписание отсутствует. Пожалуйста, загрузите файл с расписанием с помощью команды /update_schedule.")
+    else:
+        context.user_data['page'] = 0
+        send_group_keyboard(update, context)
+        
+    return CHOOSING_GROUP
 
 
+        
+def handle_day_schedule(query, group_name, day_offset):
+    schedule_text = f"Расписание на день для группы {group_name}:\n\n"
+    schedule_text += get_schedule_for_day(schedule_data, group_name, day_offset)
+    keyboard = [
+        [InlineKeyboardButton("Назад 🔙", callback_data='back_to_day_selection')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    query.edit_message_text(text=schedule_text, reply_markup=reply_markup, parse_mode='HTML')
+
+def handle_week_schedule(query, group_name):
+    schedule_text = f"Расписание на неделю для группы {group_name}:\n\n"
+    schedule_text += get_schedule_for_week(schedule_data, group_name)
+    keyboard = [[InlineKeyboardButton("Назад 🔙", callback_data='back_to_schedule_options')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    query.edit_message_text(text=schedule_text, reply_markup=reply_markup, parse_mode='HTML')
 
 def select_day_of_week(update: Update, context: CallbackContext):
-    
     group_name = context.user_data.get('selected_group')
+    text = f"Выберите день для группы {group_name.replace("Группа", "").strip()}:\n"
     group_schedule = schedule_data.get(group_name, {})
-
-    
     dates = list(group_schedule.keys())
 
-    
-    keyboard = [
-        [InlineKeyboardButton(date, callback_data=f'day_{i}')] for i, date in enumerate(dates)
-    ]
-
-    
+    keyboard = [[InlineKeyboardButton(date, callback_data=f'day_{i}')] for i, date in enumerate(dates)]
     keyboard.append([InlineKeyboardButton("Назад 🔙", callback_data='back_to_schedule_options')])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
-    query.edit_message_text(text="Выберите день:", reply_markup=reply_markup)
+    query.edit_message_text(text=text, reply_markup=reply_markup)
 
-
-    
 def send_schedule_options(update: Update, context: CallbackContext):
     group_name = context.user_data.get('selected_group')
     group_schedule = schedule_data.get(group_name, {})
-
-    
     dates = list(group_schedule.keys())
     start_date = dates[0] if dates else "Н/Д"
-    end_date = dates[5] if len(dates) > 5 else dates[-1] if dates else "Н/Д"
+    end_date = dates[-1] if dates else "Н/Д"
+    text = f"Расписание для группы {group_name.replace("Группа", "").strip()}. Выберите опцию расписания:"
 
-    week_button_text = f"На неделю ({start_date} - {end_date})"
+    week_button_text = f"На неделю ({start_date.split(', ')[1]} - {end_date.split(', ')[1]})"
 
     keyboard = [
         [InlineKeyboardButton(week_button_text, callback_data='week')],
@@ -80,147 +131,7 @@ def send_schedule_options(update: Update, context: CallbackContext):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
-    query.edit_message_text(text='Выберите опцию расписания:', reply_markup=reply_markup)
-
-
-
-
-
-
-def format_class_session(class_session):
-    if class_session['Discipline'] == 'день самостоятельной подготовки':
-        return "День самостоятельной подготовки"
-    else:
-        type_of_class = f"[{class_session['Type of Class']}]" if class_session['Type of Class'] else ""
-        
-        if 'УЧЕБНАЯ ПРАКТИКА' in class_session['Discipline'] and not class_session['Teacher'] and not class_session['Auditorium']:
-            return f"{class_session['Time']} - {class_session['Discipline']}"
-        else:
-            details = [type_of_class]
-            if class_session['Teacher']:
-                details.append(f"Преп: {class_session['Teacher']}")
-            if class_session['Auditorium']:
-                details.append(f"Ауд: {class_session['Auditorium']}")
-            details_str = ", ".join(detail for detail in details if detail)  
-
-            return f"{class_session['Time']} - {class_session['Discipline']} {details_str}".strip()
-
-def get_schedule_for_day(group_name, day_offset, query):
-    if group_name is None:
-        query.edit_message_text(text="Группа не выбрана. Пожалуйста, выберите группу.")
-        return
-    
-    week_days = list(schedule_data[group_name].keys())
-    
-    if day_offset < 0 or day_offset >= len(week_days):
-        schedule_text = "Информация для этого дня недоступна."
-    else:
-        day_name = week_days[day_offset]
-        day_schedule = schedule_data[group_name][day_name]
-        
-        schedule_text = f"<b>{day_name}:</b>\n"
-        for class_session in day_schedule:
-            if class_session['Discipline'] != 'nan':  
-                formatted_session = format_class_session(class_session)  
-                schedule_text += f"{formatted_session}\n"
-        
-        schedule_text = schedule_text.strip() if schedule_text != f"<b>{day_name}:</b>\n" else f"<b>{day_name}:</b>\n: Нет запланированных занятий."
-
-    
-    keyboard = [[InlineKeyboardButton("Назад 🔙", callback_data='back_to_schedule_options')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    try:
-        query.edit_message_text(text=schedule_text, reply_markup=reply_markup, parse_mode='HTML')
-    except telegram.error.BadRequest as e:
-        print(f"Ошибка при редактировании сообщения: {e}")
-    
-def get_schedule_for_week(group_name, query):
-    
-    if group_name is None:
-        query.edit_message_text(text="Группа не выбрана. Пожалуйста, выберите группу.")
-        return
-
-    
-    week_days = list(schedule_data[group_name].keys())
-    
-    schedule_text = ""
-    for day_name in week_days:
-        day_schedule = schedule_data[group_name][day_name]
-        day_text = f"<b>{day_name}:</b>\n"  
-        for class_session in day_schedule:
-            if class_session['Discipline'] != 'nan':  
-                formatted_session = format_class_session(class_session)  
-                day_text += f"{formatted_session}\n"
-        if day_text != f"<b>{day_name}:</b>\n":
-            schedule_text += day_text + "\n"  
-    
-    schedule_text = schedule_text.strip() if schedule_text else "На эту неделю занятий нет."
-
-    
-    keyboard = [[InlineKeyboardButton("Назад 🔙", callback_data='back_to_schedule_options')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    try:
-        query.edit_message_text(text=schedule_text, reply_markup=reply_markup, parse_mode='HTML')
-    except telegram.error.BadRequest as e:
-        print(f"Ошибка при редактировании сообщения: {e}")
-
-
-
-
-def send_back_button(query, text, callback_data):
-    keyboard = [[InlineKeyboardButton("Назад", callback_data=callback_data)]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     query.edit_message_text(text=text, reply_markup=reply_markup)
-
-
-def load_schedule():
-    global schedule_data
-    if os.path.exists(SCHEDULE_FILE):
-        try:
-            schedule_json = extract_schedule_to_json(SCHEDULE_FILE)
-            schedule_data = json.loads(schedule_json)
-            print("Расписание успешно загружено из файла.")
-        except Exception as e:
-            print(f"Ошибка при загрузке расписания: {e}")
-    else:
-        print("Файл с расписанием не найден. Пожалуйста, загрузите файл.")
-
-def start(update: Update, context: CallbackContext) -> None:
-    if not schedule_data:
-        update.message.reply_text("Расписание отсутствует. Пожалуйста, загрузите файл с расписанием с помощью команды /update_schedule.")
-    else:
-        context.user_data['page'] = 0
-        send_group_keyboard(update, context)
-
-def send_group_keyboard(update: Update, context: CallbackContext):
-    page = context.user_data.get('page', 0)
-    group_keys = list(schedule_data.keys())
-    max_page = (len(group_keys) - 1) // GROUPS_PER_PAGE
-    start_index = page * GROUPS_PER_PAGE
-    end_index = min(start_index + GROUPS_PER_PAGE, len(group_keys))
-    keyboard_groups = group_keys[start_index:end_index]
-
-    keyboard = [[InlineKeyboardButton(group, callback_data='group_' + group)] for group in keyboard_groups]
-
-    
-    keyboard.append([InlineKeyboardButton("Поиск 🔍", callback_data='search')])
-
-    navigation_buttons = []
-    if page > 0:
-        navigation_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data='prev_page'))
-    if page < max_page:
-        navigation_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data='next_page'))
-
-    if navigation_buttons:
-        keyboard.append(navigation_buttons)
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query:
-        query = update.callback_query
-        query.edit_message_text(text="Выберите группу или начните поиск:", reply_markup=reply_markup)
-    else:
-        update.message.reply_text("Выберите группу или начните поиск:", reply_markup=reply_markup)
-
 
 def search_group_result(update: Update, context: CallbackContext):
     user_input = update.message.text
@@ -232,71 +143,120 @@ def search_group_result(update: Update, context: CallbackContext):
         update.message.reply_text("Выберите группу из найденных:", reply_markup=reply_markup)
     else:
         update.message.reply_text("Группы не найдены.")
+    return ConversationHandler.END
 
+def send_group_keyboard(update: Update, context: CallbackContext):
+    query = update.callback_query
+    page = context.user_data.get('page', 0)
+    user_id = update.effective_user.id
+
+    user_info = get_user(user_id)
+    recent_groups = user_info[2].split(",") if user_info and user_info[2] else []
+
+    group_keys = list(schedule_data.keys())
+
+    marked_groups = {group: f"★ {group}" for group in recent_groups}
+    sorted_groups = sorted(group_keys, key=lambda x: (x not in marked_groups, x))
+
+    max_page = (len(sorted_groups) - 1) // GROUPS_PER_PAGE
+    start_index = page * GROUPS_PER_PAGE
+    end_index = min(start_index + GROUPS_PER_PAGE, len(sorted_groups))
+    keyboard_groups = sorted_groups[start_index:end_index]
+
+    keyboard = [[InlineKeyboardButton(marked_groups.get(group, group), callback_data='group_' + group)] for group in keyboard_groups]
+    keyboard.append([InlineKeyboardButton("Поиск 🔍", callback_data='start_search')])
+
+    navigation_buttons = []
+    if page > 0:
+        navigation_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data='prev_page'))
+    if page < max_page:
+        navigation_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data='next_page'))
+    if navigation_buttons:
+        keyboard.append(navigation_buttons)
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if query:
+        query.edit_message_text(text="Выберите группу или начните поиск:", reply_markup=reply_markup)
+    else:
+        update.message.reply_text("Выберите группу или начните поиск:", reply_markup=reply_markup)
 
 def button(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     query.answer()
 
     data = query.data
-
-    if data == 'search':
-        
-        query.edit_message_text(text="Введите название группы для поиска:")
-        
-    elif data == 'back_to_group_selection':
-        send_group_keyboard(update, context)
-    elif data == 'back_to_schedule_options':
-        send_schedule_options(update, context)
-    elif data.startswith('group_'):
-        
-        selected_group = data.split('_', 1)[1]
+    
+    
+    if data.startswith('group_'):
+        selected_group = data.split('_', 1)[1].replace(' ★', '')  # Убираем звездочку, если она есть
         context.user_data['selected_group'] = selected_group
+        
+        user_id = query.from_user.id
+        telegram_login = query.from_user.username
+        add_or_update_user(user_id, telegram_login, selected_group)
         send_schedule_options(update, context)
+        
+        return CHOOSING_GROUP
+        
     elif data == 'week':
-        
-        get_schedule_for_week(context.user_data.get('selected_group'), query)
+        selected_group = context.user_data.get('selected_group')
+        if selected_group:
+            handle_week_schedule(query, selected_group)
+        else:
+            query.edit_message_text(text="Не выбрана группа.")
+            
     elif data.startswith('day_'):
-        
+        selected_group = context.user_data.get('selected_group')
         day_offset = int(data.split('_')[1])
-        get_schedule_for_day(context.user_data.get('selected_group'), day_offset, query)
-    elif data == 'select_day':
-        select_day_of_week(update, context)
-    elif data in ['prev_page', 'next_page']:
+        handle_day_schedule(query, selected_group, day_offset)
         
+    elif data in ['prev_page', 'next_page']:
         page = context.user_data.get('page', 0)
         if data == 'prev_page':
             context.user_data['page'] = max(0, page - 1)
-        else:  
+        else:
             context.user_data['page'] = page + 1
         send_group_keyboard(update, context)
-    else:
         
-        query.edit_message_text(text="Неизвестная команда.")
-
-
-
-def update_schedule(update: Update, context: CallbackContext) -> None:
-    document = update.message.document
-    if document:
-        file = context.bot.get_file(document.file_id)
-        file.download(SCHEDULE_FILE)
-        load_schedule()
-        update.message.reply_text("Расписание успешно обновлено.")
-    else:
-        update.message.reply_text("Пожалуйста, отправьте файл с расписанием.")
+    elif data in ['back_to_group_selection', 'back_to_schedule_options', 'select_day', 'back_to_day_selection']:
+        if data == 'back_to_group_selection':
+            send_group_keyboard(update, context)
+        elif data == 'back_to_schedule_options':
+            send_schedule_options(update, context)
+        elif data == 'select_day':
+            select_day_of_week(update, context)
+        elif data == 'back_to_day_selection':
+            select_day_of_week(update, context)
+            return
     
+    elif data == 'start_search':
+        query.edit_message_text(text="Введите название группы для поиска:")
+        return SEARCH
+                
+    else:
+        query.edit_message_text(text="Неизвестная команда.")   
+        
 
+    
 def main():
-    load_schedule()
-    updater = Updater("6668495629:AAGlmeOCtw9dQxSXr31UugK9bLGfsimw-Xg", use_context=True)
+    global schedule_data
+    schedule_data = load_schedule()
+    updater = Updater("6818826799:AAF2xKtBprs9f_N0L0jVl9fQ3KupmOpr3MI", use_context=True)
     dispatcher = updater.dispatcher
-
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("update_schedule", update_schedule))
+    
     dispatcher.add_handler(CallbackQueryHandler(button))
-    dispatcher.add_handler(MessageHandler(Filters.document, update_schedule))
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, search_group_result))
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('update_schedule', start_update_schedule), CommandHandler('start', start)],
+        states={
+            UPDATE_SCHEDULE: [MessageHandler(Filters.document, update_schedule)]
+        },
+        fallbacks=[]
+    )
+
+    dispatcher.add_handler(conv_handler)
 
     updater.start_polling()
     updater.idle()
