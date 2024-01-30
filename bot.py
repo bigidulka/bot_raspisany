@@ -242,7 +242,7 @@ def button(update: Update, context: CallbackContext) -> None:
 def main():
     global schedule_data
     schedule_data = load_schedule()
-    updater = Updater("6818826799:AAF2xKtBprs9f_N0L0jVl9fQ3KupmOpr3MI", use_context=True)
+    updater = Updater("6668495629:AAGlmeOCtw9dQxSXr31UugK9bLGfsimw-Xg", use_context=True)
     dispatcher = updater.dispatcher
     
     dispatcher.add_handler(CallbackQueryHandler(button))
