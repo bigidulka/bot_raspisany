@@ -31,16 +31,21 @@ def format_schedule_for_group(group_schedule):
     return schedule_text
 
 def format_class_session(class_session):
-    """Format individual class sessions for display, skipping 'nan' entries and underlining class times."""
+    """Format individual class sessions for display, skipping 'nan' entries."""
     if class_session['Discipline'].strip().lower() == 'nan':
-        return None  
+        return None
 
-    time = f"<u>{class_session['Time']}</u>"  
+    # Проверка на самостоятельную подготовку
+    if 'самостоятельной подготовки' in class_session['Discipline'].lower():
+        time = ""  # Не отображаем время для самостоятельной подготовки
+    else:
+        time = f"<u>{class_session['Time']}</u>"  # Подчеркиваем время для обычных занятий
+
     discipline = class_session['Discipline']
     type_of_class = f"[{class_session['Type of Class']}]" if class_session['Type of Class'] else ""
     teacher = f"Преп: {class_session['Teacher']}" if class_session['Teacher'] else ""
     auditorium = f"Ауд: {class_session['Auditorium']}" if class_session['Auditorium'] else ""
-    
+
     details = ", ".join(detail for detail in [type_of_class, teacher, auditorium] if detail)
     formatted_session = f"{time} - {discipline} {details}".strip()
 

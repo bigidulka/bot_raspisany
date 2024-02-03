@@ -2,67 +2,23 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
 import os
 from utils import load_schedule, filter_groups, get_schedule_for_day, get_schedule_for_week, GROUPS_PER_PAGE
-import sqlite3
-
-conn = sqlite3.connect('users.db', check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    telegram_login TEXT,
-    recent_groups TEXT  -- Строка с последними группами, разделенными запятыми
-)
-''')
-conn.commit()
-
-def add_or_update_user(user_id, telegram_login, selected_group):
-    """Добавление или обновление пользователя в базе данных с тремя последними группами."""
-    user_info = get_user(user_id)
-    if user_info:
-        recent_groups = user_info[2] or ""
-        groups_list = recent_groups.split(",") if recent_groups else []
-        if selected_group not in groups_list:
-            groups_list.append(selected_group)
-            groups_list = groups_list[-3:]  # Оставляем только последние три группы
-        recent_groups = ",".join(groups_list)
-    else:
-        recent_groups = selected_group
-
-    cursor.execute('''
-    INSERT INTO users (id, telegram_login, recent_groups) VALUES (?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET telegram_login = excluded.telegram_login, recent_groups = excluded.recent_groups
-    ''', (user_id, telegram_login, recent_groups))
-    conn.commit()
-
-def get_user(user_id):
-    """Получение информации о пользователе по ID."""
-    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
-    return cursor.fetchone()
+from db import *
 
 
 
-SEARCH, UPDATE_SCHEDULE, CHOOSING_GROUP = range(3)
-schedule_data = {} 
-
-def start_update_schedule(update: Update, context: CallbackContext):
-    update.message.reply_text("Пожалуйста, отправьте файл с расписанием.")
-    return UPDATE_SCHEDULE
-
-def update_schedule(update: Update, context: CallbackContext):
+def handle_document(update: Update, context: CallbackContext):
     global schedule_data
     document = update.message.document
     if document:
         file = context.bot.get_file(document.file_id)
-        temp_file_path = file.download()
+        temp_file_path = file.download('schedule_file.xlsx')
         try:
             schedule_data = load_schedule() 
             update.message.reply_text("Расписание успешно обновлено.")
-        finally:
-            os.remove(temp_file_path) 
+        except:
+            update.message.reply_text("Ошибка.")
     else:
-        update.message.reply_text("Ошибка загрузки файла.")
-    return ConversationHandler.END
+        update.message.reply_text("Ошибка: Файл не был получен.")
         
 def start(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
@@ -75,12 +31,10 @@ def start(update: Update, context: CallbackContext):
         add_or_update_user(user_id, telegram_login, None)
 
     if not schedule_data:
-        update.message.reply_text("Расписание отсутствует. Пожалуйста, загрузите файл с расписанием с помощью команды /update_schedule.")
+        update.message.reply_text("Расписание отсутствует. Пожалуйста, загрузите файл с расписанием.")
     else:
         context.user_data['page'] = 0
         send_group_keyboard(update, context)
-        
-    return CHOOSING_GROUP
 
 
         
@@ -102,7 +56,7 @@ def handle_week_schedule(query, group_name):
 
 def select_day_of_week(update: Update, context: CallbackContext):
     group_name = context.user_data.get('selected_group')
-    text = f"Выберите день для группы {group_name.replace("Группа", "").strip()}:\n"
+    text = f"Выберите день для группы {group_name.replace('Группа', '').strip()}:\n"
     group_schedule = schedule_data.get(group_name, {})
     dates = list(group_schedule.keys())
 
@@ -119,7 +73,7 @@ def send_schedule_options(update: Update, context: CallbackContext):
     dates = list(group_schedule.keys())
     start_date = dates[0] if dates else "Н/Д"
     end_date = dates[-1] if dates else "Н/Д"
-    text = f"Расписание для группы {group_name.replace("Группа", "").strip()}. Выберите опцию расписания:"
+    text = f"Расписание для группы {group_name.replace('Группа', '').strip()}. Выберите опцию расписания:"
 
     week_button_text = f"На неделю ({start_date.split(', ')[1]} - {end_date.split(', ')[1]})"
 
@@ -132,18 +86,6 @@ def send_schedule_options(update: Update, context: CallbackContext):
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
     query.edit_message_text(text=text, reply_markup=reply_markup)
-
-def search_group_result(update: Update, context: CallbackContext):
-    user_input = update.message.text
-    filtered_groups = filter_groups(user_input, schedule_data.keys())
-
-    if filtered_groups:
-        keyboard = [[InlineKeyboardButton(group, callback_data='group_' + group)] for group in filtered_groups]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        update.message.reply_text("Выберите группу из найденных:", reply_markup=reply_markup)
-    else:
-        update.message.reply_text("Группы не найдены.")
-    return ConversationHandler.END
 
 def send_group_keyboard(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -181,7 +123,7 @@ def send_group_keyboard(update: Update, context: CallbackContext):
     else:
         update.message.reply_text("Выберите группу или начните поиск:", reply_markup=reply_markup)
 
-def button(update: Update, context: CallbackContext) -> None:
+def inline_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     query.answer()
 
@@ -196,8 +138,6 @@ def button(update: Update, context: CallbackContext) -> None:
         telegram_login = query.from_user.username
         add_or_update_user(user_id, telegram_login, selected_group)
         send_schedule_options(update, context)
-        
-        return CHOOSING_GROUP
         
     elif data == 'week':
         selected_group = context.user_data.get('selected_group')
@@ -232,31 +172,40 @@ def button(update: Update, context: CallbackContext) -> None:
     
     elif data == 'start_search':
         query.edit_message_text(text="Введите название группы для поиска:")
-        return SEARCH
                 
     else:
         query.edit_message_text(text="Неизвестная команда.")   
         
+def search_group(update: Update, context: CallbackContext):
+    user_input = update.message.text
+    filtered_groups = filter_groups(user_input, schedule_data.keys())
 
+    if filtered_groups:
+        keyboard = [[InlineKeyboardButton(group, callback_data='group_' + group)] for group in filtered_groups]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text("Выберите группу из найденных:", reply_markup=reply_markup)
+    else:
+        update.message.reply_text("Группы не найдены.")
+    
+def list_users(update: Update, context: CallbackContext):
+    users = get_all_users()
+    message = "Список всех пользователей и их групп:\n"
+    for user in users:
+        telegram_login, groups = user
+        message += f"@{telegram_login}: {groups}\n"
+    update.message.reply_text(message)
     
 def main():
     global schedule_data
     schedule_data = load_schedule()
     updater = Updater("6668495629:AAGlmeOCtw9dQxSXr31UugK9bLGfsimw-Xg", use_context=True)
-    dispatcher = updater.dispatcher
-    
-    dispatcher.add_handler(CallbackQueryHandler(button))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, search_group_result))
+    dp = updater.dispatcher
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('update_schedule', start_update_schedule), CommandHandler('start', start)],
-        states={
-            UPDATE_SCHEDULE: [MessageHandler(Filters.document, update_schedule)]
-        },
-        fallbacks=[]
-    )
-
-    dispatcher.add_handler(conv_handler)
+    dp.add_handler(CommandHandler('start', start))
+    dp.add_handler(CommandHandler('list_users', list_users))
+    dp.add_handler(MessageHandler(Filters.document, handle_document))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, search_group))
+    dp.add_handler(CallbackQueryHandler(inline_handler))
 
     updater.start_polling()
     updater.idle()
