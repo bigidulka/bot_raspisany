@@ -6,6 +6,7 @@ from db import *
 
 schedule_data = {} 
 USERS_PER_PAGE = 10
+SCHEDULE_FILE = 'schedule_file.xlsx'
 
 def list_users(update: Update, context: CallbackContext):
     page = context.user_data.get('user_list_page', 0)  # Текущая страница, по умолчанию 0
@@ -41,12 +42,13 @@ def update_schedule(update: Update, context: CallbackContext):
     document = update.message.document
     if document:
         file = context.bot.get_file(document.file_id)
-        temp_file_path = file.download()
+        temp_file_path = file.download()  # Загружаем новый файл
         try:
-            schedule_data = load_schedule() 
+            # Загружаем расписание из нового файла
+            schedule_data = load_schedule(temp_file_path)  # Используем новый путь к файлу
             update.message.reply_text("Расписание успешно обновлено.")
         finally:
-            os.remove(temp_file_path) 
+            os.remove(temp_file_path)  # Удаляем временный файл
     else:
         update.message.reply_text("Ошибка загрузки файла.")
         
@@ -215,7 +217,8 @@ def button(update: Update, context: CallbackContext) -> None:
     elif data == 'list_users_prev_page':
         context.user_data['user_list_page'] = max(0, context.user_data.get('user_list_page', 1) - 1)
         list_users(update, context)
-
+    elif data == 'start_search':
+        query.edit_message_text(text="Введите название для поиска:")
                 
     else:
         query.edit_message_text(text="Неизвестная команда.")   
@@ -224,7 +227,7 @@ def button(update: Update, context: CallbackContext) -> None:
     
 def main():
     global schedule_data
-    schedule_data = load_schedule()
+    schedule_data = load_schedule(SCHEDULE_FILE)
     updater = Updater("6668495629:AAGlmeOCtw9dQxSXr31UugK9bLGfsimw-Xg", use_context=True)
     dispatcher = updater.dispatcher
 

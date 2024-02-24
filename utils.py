@@ -3,7 +3,6 @@ import json
 import os
 from func import extract_schedule_to_json
 
-SCHEDULE_FILE = 'schedule_file.xlsx'
 GROUPS_PER_PAGE = 5 
 
 def normalize_string(s):
@@ -51,19 +50,19 @@ def format_class_session(class_session):
 
     return formatted_session
 
-def load_schedule():
-    if os.path.exists(SCHEDULE_FILE):
+def load_schedule(file_path):
+    if os.path.exists(file_path):
         try:
-            schedule_json = extract_schedule_to_json(SCHEDULE_FILE)  
+            schedule_json = extract_schedule_to_json(file_path)
             schedule_data = json.loads(schedule_json)
             print("Расписание успешно загружено из файла.")
-            return schedule_data  
+            return schedule_data
         except Exception as e:
             print(f"Ошибка при загрузке расписания: {e}")
-            return {}  
+            return {}
     else:
         print("Файл с расписанием не найден. Пожалуйста, загрузите файл.")
-        return {} 
+        return {}
 
 def get_schedule_for_day(schedule_data, group_name, day_offset):
     """Generate schedule text for a specific day."""
