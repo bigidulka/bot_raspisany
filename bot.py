@@ -2,59 +2,39 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
 import os
 from utils import load_schedule, filter_groups, get_schedule_for_day, get_schedule_for_week, GROUPS_PER_PAGE
-import sqlite3
+from db import *
 
-conn = sqlite3.connect('users.db', check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    telegram_login TEXT,
-    recent_groups TEXT  -- Строка с последними группами, разделенными запятыми
-)
-''')
-conn.commit()
-
-def add_or_update_user(user_id, telegram_login, selected_group):
-    """Добавление или обновление пользователя в базе данных с тремя последними группами."""
-    user_info = get_user(user_id)
-    if user_info:
-        recent_groups = user_info[2] or ""
-        groups_list = recent_groups.split(",") if recent_groups else []
-        
-        # Удаляем все предыдущие вхождения этой группы в списке
-        groups_list = [group for group in groups_list if group != selected_group]
-        
-        # Добавляем выбранную группу в конец списка
-        groups_list.append(selected_group)
-        
-        # Оставляем только последние три группы
-        groups_list = groups_list[-3:]
-        
-        recent_groups = ",".join(groups_list)
-    else:
-        recent_groups = selected_group
-
-    cursor.execute('''
-    INSERT INTO users (id, telegram_login, recent_groups) VALUES (?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET telegram_login = excluded.telegram_login, recent_groups = excluded.recent_groups
-    ''', (user_id, telegram_login, recent_groups))
-    conn.commit()
-
-def get_user(user_id):
-    """Получение информации о пользователе по ID."""
-    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
-    return cursor.fetchone()
-
-
-
-SEARCH, UPDATE_SCHEDULE, CHOOSING_GROUP = range(3)
 schedule_data = {} 
+USERS_PER_PAGE = 10
 
-def start_update_schedule(update: Update, context: CallbackContext):
-    update.message.reply_text("Пожалуйста, отправьте файл с расписанием.")
-    return UPDATE_SCHEDULE
+def list_users(update: Update, context: CallbackContext):
+    page = context.user_data.get('user_list_page', 0)  # Текущая страница, по умолчанию 0
+    users = get_all_users()
+    
+    # Рассчитываем количество страниц
+    total_pages = len(users) // USERS_PER_PAGE + (1 if len(users) % USERS_PER_PAGE > 0 else 0)
+    
+    # Получаем пользователей для текущей страницы
+    page_users = users[page * USERS_PER_PAGE:(page + 1) * USERS_PER_PAGE]
+
+    # Формируем текст сообщения
+    message_text = "Список пользователей:\n\n"
+    for user in page_users:
+        telegram_login, recent_groups = user
+        message_text += f"@{telegram_login}: {recent_groups}\n"
+
+    # Создаем кнопки для листания
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data='list_users_prev_page'))
+    if page + 1 < total_pages:
+        buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data='list_users_next_page'))
+
+    # Добавляем кнопки в разметку
+    keyboard = [buttons] if buttons else []
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    update.message.reply_text(message_text, reply_markup=reply_markup)
 
 def update_schedule(update: Update, context: CallbackContext):
     global schedule_data
@@ -69,7 +49,6 @@ def update_schedule(update: Update, context: CallbackContext):
             os.remove(temp_file_path) 
     else:
         update.message.reply_text("Ошибка загрузки файла.")
-    return ConversationHandler.END
         
 def start(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
@@ -87,12 +66,10 @@ def start(update: Update, context: CallbackContext):
         context.user_data['page'] = 0
         send_group_keyboard(update, context)
         
-    return CHOOSING_GROUP
-
 
         
 def handle_day_schedule(query, group_name, day_offset):
-    schedule_text = f"Расписание на день для группы {group_name}:\n\n"
+    schedule_text = f"Расписание на день для группы {group_name.replace("Группа", "").strip()}:\n\n"
     schedule_text += get_schedule_for_day(schedule_data, group_name, day_offset)
     keyboard = [
         [InlineKeyboardButton("Назад 🔙", callback_data='back_to_day_selection')]
@@ -101,7 +78,7 @@ def handle_day_schedule(query, group_name, day_offset):
     query.edit_message_text(text=schedule_text, reply_markup=reply_markup, parse_mode='HTML')
 
 def handle_week_schedule(query, group_name):
-    schedule_text = f"Расписание на неделю для группы {group_name}:\n\n"
+    schedule_text = f"Расписание на неделю для группы {group_name.replace("Группа", "").strip()}:\n\n"
     schedule_text += get_schedule_for_week(schedule_data, group_name)
     keyboard = [[InlineKeyboardButton("Назад 🔙", callback_data='back_to_schedule_options')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -150,7 +127,6 @@ def search_group_result(update: Update, context: CallbackContext):
         update.message.reply_text("Выберите группу из найденных:", reply_markup=reply_markup)
     else:
         update.message.reply_text("Группы не найдены.")
-    return ConversationHandler.END
 
 def send_group_keyboard(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -204,8 +180,6 @@ def button(update: Update, context: CallbackContext) -> None:
         add_or_update_user(user_id, telegram_login, selected_group)
         send_schedule_options(update, context)
         
-        return CHOOSING_GROUP
-        
     elif data == 'week':
         selected_group = context.user_data.get('selected_group')
         if selected_group:
@@ -235,11 +209,13 @@ def button(update: Update, context: CallbackContext) -> None:
             select_day_of_week(update, context)
         elif data == 'back_to_day_selection':
             select_day_of_week(update, context)
-            return
-    
-    elif data == 'start_search':
-        query.edit_message_text(text="Введите название группы для поиска:")
-        return SEARCH
+    elif data == 'list_users_next_page':
+        context.user_data['user_list_page'] += 1
+        list_users(update, context)
+    elif data == 'list_users_prev_page':
+        context.user_data['user_list_page'] = max(0, context.user_data.get('user_list_page', 1) - 1)
+        list_users(update, context)
+
                 
     else:
         query.edit_message_text(text="Неизвестная команда.")   
@@ -251,19 +227,12 @@ def main():
     schedule_data = load_schedule()
     updater = Updater("6668495629:AAGlmeOCtw9dQxSXr31UugK9bLGfsimw-Xg", use_context=True)
     dispatcher = updater.dispatcher
-    
+
+    dispatcher.add_handler(CommandHandler('start', start))
     dispatcher.add_handler(CallbackQueryHandler(button))
+    dispatcher.add_handler(MessageHandler(Filters.document, update_schedule))
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, search_group_result))
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('update_schedule', start_update_schedule), CommandHandler('start', start)],
-        states={
-            UPDATE_SCHEDULE: [MessageHandler(Filters.document, update_schedule)]
-        },
-        fallbacks=[]
-    )
-
-    dispatcher.add_handler(conv_handler)
+    dispatcher.add_handler(CommandHandler('list_users', list_users))
 
     updater.start_polling()
     updater.idle()
