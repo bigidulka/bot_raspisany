@@ -2,10 +2,11 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
 import os
-from utils import load_schedule, filter_groups, get_schedule_for_day, get_schedule_for_week, GROUPS_PER_PAGE
+from utils import *
 from db import *
 
 schedule_data = {} 
+teacher_days = {}
 USERS_PER_PAGE = 10
 SCHEDULE_FILE = 'schedule_file.xlsx'
 
@@ -161,6 +162,8 @@ def send_group_keyboard(update: Update, context: CallbackContext):
 
     keyboard = [[InlineKeyboardButton(marked_groups.get(group, group), callback_data='group_' + group)] for group in keyboard_groups]
     keyboard.append([InlineKeyboardButton("Поиск 🔍", callback_data='start_search')])
+    
+    keyboard.append([InlineKeyboardButton("Поиск преподавателя 🔍", callback_data='search_teacher_prompt')])
 
     navigation_buttons = []
     if page > 0:
@@ -185,7 +188,14 @@ def button(update: Update, context: CallbackContext) -> None:
 
     data = query.data
     
-    if data.startswith('group_'):
+    
+    if data == 'search_teacher_prompt':
+        query.edit_message_text("Введите команду в формате: /search_teacher <Фамилия преподавателя>")
+    elif data.startswith("show_day_"):
+        day_name = data.split("show_day_")[1]
+        schedule_for_day = show_teacher_schedule_for_day(teacher_days, day_name)
+        query.edit_message_text(text=schedule_for_day, parse_mode='HTML')
+    elif data.startswith('group_'):
         selected_group = data.split('_', 1)[1].replace(' ★', '')  # Убираем звездочку, если она есть
         context.user_data['selected_group'] = selected_group
         
@@ -270,10 +280,53 @@ def message_all_users(update: Update, context: CallbackContext):
     # Ответим на команду в чате
     update.message.reply_text("Сообщение разослано всем участникам бота.")
     
+def day_sort_key(day):
+    # Словарь для определения порядка дней недели
+    week_days_order = {
+        'Понедельник': 1,
+        'Вторник': 2,
+        'Среда': 3,
+        'Четверг': 4,
+        'Пятница': 5,
+        'Суббота': 6,
+        'Воскресенье': 7
+    }
+    day_name, date = day.split(', ')
+    # Возвращаем кортеж с порядковым номером дня недели и датой
+    return (week_days_order[day_name], date)    
+
+def search_teacher(update: Update, context: CallbackContext):
+    global teacher_days
+    text = ' '.join(context.args)
+    
+    if not text:
+        update.message.reply_text("Для этого преподавателя занятий не найдено.")
+        return
+    
+    teacher_days = find_teacher_days(schedule_data, text)
+
+    # Создание кнопок с датами, отсортированных по порядку дней недели
+    keyboard = []
+    sorted_days = sorted(teacher_days.keys(), key=day_sort_key)
+    for day_name in sorted_days:
+        # Создаем кнопку для каждого дня
+        button = InlineKeyboardButton(day_name, callback_data=f"show_day_{day_name}")
+        keyboard.append([button])
+    
+    # Если нет занятий, отправляем сообщение об этом
+    if not keyboard:
+        update.message.reply_text("Для этого преподавателя занятий не найдено.")
+        return
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text("Выберите день:", reply_markup=reply_markup)
+
+    
+    
 def main():
     global schedule_data
     schedule_data = load_schedule(SCHEDULE_FILE)
-    updater = Updater("6668495629:AAGlmeOCtw9dQxSXr31UugK9bLGfsimw-Xg", use_context=True)
+    updater = Updater("6818826799:AAErun_Xz5pMFQYgwxLe1ubS-FXofrPrxh8", use_context=True)
     dispatcher = updater.dispatcher
 
     dispatcher.add_handler(CommandHandler('start', start))
@@ -284,6 +337,8 @@ def main():
     dispatcher.add_handler(CommandHandler("message", message_all_users, pass_args=True))
     dispatcher.add_handler(CommandHandler("toggle_message", toggle_message_command))
 
+    dispatcher.add_handler(CommandHandler("search_teacher", search_teacher, pass_args=True))
+    
     updater.start_polling()
     updater.idle()
 

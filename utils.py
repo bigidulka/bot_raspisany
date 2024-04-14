@@ -113,3 +113,44 @@ def get_schedule_for_week(schedule_data, group_name):
         schedule_text += "\n"
         
     return schedule_text
+
+
+
+
+
+def find_teacher_days(schedule_data, teacher_lastname):
+    """Найти все дни с занятиями для указанного учителя."""
+    teacher_days = {}
+    for group_name, week_schedule in schedule_data.items():
+        for day_name, day_schedule in week_schedule.items():
+            for class_session in day_schedule:
+                teachers = class_session['Teacher'].split('\n')
+                formatted_session = format_class_session(class_session)
+                if formatted_session and any(teacher_lastname.lower() in teacher.lower() for teacher in teachers):
+                    if day_name not in teacher_days:
+                        teacher_days[day_name] = []
+                    # Добавляем проверку на вхождение имени преподавателя в отформатированную сессию
+                    if teacher_lastname.lower() in formatted_session.lower():
+                        teacher_days[day_name].append(formatted_session)
+    return teacher_days
+
+from datetime import datetime
+import re
+
+def parse_time(time_str):
+    """Parse time from the formatted session string, removing HTML tags."""
+    # Удаление HTML тегов
+    clean_time_str = re.sub(r'<[^>]*>', '', time_str)
+    # Извлечение времени начала
+    time_range = clean_time_str.split('-')[0].strip()
+    start_time_str = time_range.split(' ')[0]
+    return datetime.strptime(start_time_str, "%H.%M").time()
+
+def show_teacher_schedule_for_day(teacher_days, day_name):
+    """Вывести расписание для учителя в выбранный день, отсортированное по времени."""
+    if day_name in teacher_days:
+        # Сортируем список занятий по времени начала
+        sorted_sessions = sorted(teacher_days[day_name], key=lambda x: parse_time(x))
+        return "\n".join(sorted_sessions)
+    else:
+        return "В этот день занятий у указанного учителя нет."
