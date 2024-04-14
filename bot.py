@@ -51,13 +51,12 @@ def update_schedule(update: Update, context: CallbackContext):
     document = update.message.document
     if document:
         file = context.bot.get_file(document.file_id)
-        temp_file_path = file.download()  # Загружаем новый файл
-        try:
-            # Загружаем расписание из нового файла
-            schedule_data = load_schedule(temp_file_path)  # Используем новый путь к файлу
-            update.message.reply_text("Расписание успешно обновлено.")
-        finally:
-            os.remove(temp_file_path)  # Удаляем временный файл
+        # Загружаем файл под постоянным именем 'schedule_file.xlsx'
+        file.download(custom_path='schedule_file.xlsx')  # Сохраняем файл под нужным именем
+        
+        # Загружаем расписание из обновленного файла
+        schedule_data = load_schedule('schedule_file.xlsx')
+        update.message.reply_text("Расписание успешно обновлено.")
     else:
         update.message.reply_text("Ошибка загрузки файла.")
         
@@ -274,7 +273,7 @@ def message_all_users(update: Update, context: CallbackContext):
 def main():
     global schedule_data
     schedule_data = load_schedule(SCHEDULE_FILE)
-    updater = Updater("6668495629:AAGlmeOCtw9dQxSXr31UugK9bLGfsimw-Xg", use_context=True)
+    updater = Updater("6818826799:AAErun_Xz5pMFQYgwxLe1ubS-FXofrPrxh8", use_context=True)
     dispatcher = updater.dispatcher
 
     dispatcher.add_handler(CommandHandler('start', start))

@@ -35,21 +35,31 @@ def format_class_session(class_session):
     if class_session['Discipline'].strip().lower() == 'nan':
         return None
 
-    # Проверка на самостоятельную подготовку
-    if 'самостоятельной подготовки' in class_session['Discipline'].lower():
-        time = ""  # Не отображаем время для самостоятельной подготовки
-    else:
-        time = f"<u>{class_session['Time']}</u>"  # Подчеркиваем время для обычных занятий
+    # Разделение информации о нескольких подгруппах
+    disciplines = class_session['Discipline'].split('\n')
+    teachers = class_session['Teacher'].split('\n')
+    auditoriums = class_session['Auditorium'].split('\n')
+    
+    formatted_session = ""
+    time = f"<u>{class_session['Time']}</u>"  # Подчеркиваем время для обычных занятий
 
-    discipline = class_session['Discipline']
-    type_of_class = f"[{class_session['Type of Class']}]" if class_session['Type of Class'] else ""
-    teacher = f"Преп: {class_session['Teacher']}" if class_session['Teacher'] else ""
-    auditorium = f"Ауд: {class_session['Auditorium']}" if class_session['Auditorium'] else ""
+    # Обходим каждую подгруппу
+    for idx, discipline in enumerate(disciplines):
+        if discipline.lower() == 'nan':
+            continue
 
-    details = ", ".join(detail for detail in [type_of_class, teacher, auditorium] if detail)
-    formatted_session = f"{time} - {discipline} {details}".strip()
+        type_of_class = f"[{class_session['Type of Class']}]" if class_session['Type of Class'] else ""
+        teacher = f"Преп: {teachers[idx]}" if idx < len(teachers) and teachers[idx] else ""
+        auditorium = f"Ауд: {auditoriums[idx]}" if idx < len(auditoriums) and auditoriums[idx] else ""
+        
+        details = ", ".join(detail for detail in [type_of_class, teacher, auditorium] if detail)
+        
+        if idx == 0:
+            formatted_session += f"{time} - {discipline} {details}"
+        else:
+            formatted_session += f"\n    {discipline} {details}"  # Для подгрупп добавляем отступ
 
-    return formatted_session
+    return formatted_session.strip()
 
 def load_schedule(file_path):
     if os.path.exists(file_path):
