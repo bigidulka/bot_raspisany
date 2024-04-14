@@ -1,3 +1,4 @@
+# File path: bot.py
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
 import os
@@ -9,33 +10,41 @@ USERS_PER_PAGE = 10
 SCHEDULE_FILE = 'schedule_file.xlsx'
 
 def list_users(update: Update, context: CallbackContext):
-    page = context.user_data.get('user_list_page', 0)  # Текущая страница, по умолчанию 0
+    query = update.callback_query
+    # Check if user_list_page is initialized, if not, initialize it to 0
+    if 'user_list_page' not in context.user_data:
+        context.user_data['user_list_page'] = 0
+    
+    page = context.user_data['user_list_page']  # Current page, default to 0
     users = get_all_users()
     
-    # Рассчитываем количество страниц
+    # Calculate total number of pages
     total_pages = len(users) // USERS_PER_PAGE + (1 if len(users) % USERS_PER_PAGE > 0 else 0)
     
-    # Получаем пользователей для текущей страницы
+    # Get users for the current page
     page_users = users[page * USERS_PER_PAGE:(page + 1) * USERS_PER_PAGE]
 
-    # Формируем текст сообщения
-    message_text = "Список пользователей:\n\n"
+    # Form the message text
+    message_text = f"Список пользователей ({page + 1}/{total_pages}):\n\n"
     for user in page_users:
         telegram_login, recent_groups = user
         message_text += f"@{telegram_login}: {recent_groups}\n"
 
-    # Создаем кнопки для листания
+    # Create buttons for pagination
     buttons = []
     if page > 0:
         buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data='list_users_prev_page'))
     if page + 1 < total_pages:
         buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data='list_users_next_page'))
 
-    # Добавляем кнопки в разметку
+    # Add buttons to the markup
     keyboard = [buttons] if buttons else []
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    update.message.reply_text(message_text, reply_markup=reply_markup)
+    if query:
+        query.edit_message_text(text=message_text, reply_markup=reply_markup)
+    else:
+        update.message.reply_text(message_text, reply_markup=reply_markup)
 
 def update_schedule(update: Update, context: CallbackContext):
     global schedule_data
@@ -148,6 +157,9 @@ def send_group_keyboard(update: Update, context: CallbackContext):
     end_index = min(start_index + GROUPS_PER_PAGE, len(sorted_groups))
     keyboard_groups = sorted_groups[start_index:end_index]
 
+    # Form the message text with current page number and total pages
+    message_text = f"Выберите группу или начните поиск ({page + 1}/{max_page + 1}):\n"
+
     keyboard = [[InlineKeyboardButton(marked_groups.get(group, group), callback_data='group_' + group)] for group in keyboard_groups]
     keyboard.append([InlineKeyboardButton("Поиск 🔍", callback_data='start_search')])
 
@@ -162,16 +174,17 @@ def send_group_keyboard(update: Update, context: CallbackContext):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if query:
-        query.edit_message_text(text="Выберите группу или начните поиск:", reply_markup=reply_markup)
+        query.edit_message_text(text=message_text, reply_markup=reply_markup)
     else:
-        update.message.reply_text("Выберите группу или начните поиск:", reply_markup=reply_markup)
+        update.message.reply_text(message_text, reply_markup=reply_markup)
 
 def button(update: Update, context: CallbackContext) -> None:
+    
+    
     query = update.callback_query
     query.answer()
 
     data = query.data
-    
     
     if data.startswith('group_'):
         selected_group = data.split('_', 1)[1].replace(' ★', '')  # Убираем звездочку, если она есть
@@ -223,12 +236,45 @@ def button(update: Update, context: CallbackContext) -> None:
     else:
         query.edit_message_text(text="Неизвестная команда.")   
         
+message_command_allowed = True
 
+def toggle_message_command(update: Update, context: CallbackContext):
+    global message_command_allowed  # Используем глобальную переменную
+    
+    chat_id = update.message.chat_id
+    # Переключаем состояние команды
+    message_command_allowed = not message_command_allowed
+    
+    if message_command_allowed:
+        update.message.reply_text("Теперь команда /message включена.")
+    else:
+        update.message.reply_text("Теперь команда /message отключена.")
+
+def message_all_users(update: Update, context: CallbackContext):
+    global message_command_allowed  # Используем глобальную переменную
+    
+    # Проверяем, разрешено ли использование команды /message
+    if not message_command_allowed:
+        update.message.reply_text("Команда /message отключена.")
+        return
+    
+    # Получаем текст сообщения из аргумента команды
+    text = ' '.join(context.args)
+    # Получаем список всех пользователей из базы данных
+    all_users = get_all_user_ids()
+    # Отправляем сообщение каждому пользователю
+    for user_id in all_users:
+        try:
+            context.bot.send_message(user_id, text)
+        except Exception as e:
+            update.message.reply_text(f"Ошибка при отправке сообщения пользователю {user_id}: {e}, @{get_user(user_id)}")
+    # Ответим на команду в чате
+    update.message.reply_text("Сообщение разослано всем участникам бота.")
     
 def main():
     global schedule_data
     schedule_data = load_schedule(SCHEDULE_FILE)
-    updater = Updater("6668495629:AAGlmeOCtw9dQxSXr31UugK9bLGfsimw-Xg", use_context=True)
+    updater = Updater("6818826799:AAF2xKtBprs9f_N0L0jVl9fQ3KupmOpr3MI", use_context=True)
     dispatcher = updater.dispatcher
 
     dispatcher.add_handler(CommandHandler('start', start))
@@ -236,6 +282,8 @@ def main():
     dispatcher.add_handler(MessageHandler(Filters.document, update_schedule))
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, search_group_result))
     dispatcher.add_handler(CommandHandler('list_users', list_users))
+    dispatcher.add_handler(CommandHandler("message", message_all_users, pass_args=True))
+    dispatcher.add_handler(CommandHandler("toggle_message", toggle_message_command))
 
     updater.start_polling()
     updater.idle()

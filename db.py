@@ -1,3 +1,4 @@
+# File path: db.py
 import sqlite3
 
 conn = sqlite3.connect('users.db', check_same_thread=False)
@@ -47,3 +48,8 @@ def get_all_users():
     """Получить всех пользователей и их группы из базы данных."""
     cursor.execute('SELECT telegram_login, recent_groups FROM users')
     return cursor.fetchall()
+
+def get_all_user_ids():
+    """Получить все Telegram ID пользователей из базы данных."""
+    cursor.execute('SELECT id FROM users')
+    return [row[0] for row in cursor.fetchall()]
